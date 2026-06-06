@@ -172,6 +172,8 @@ def _make_master_bridge(entry: registry.TopicEntry, bot: Bot) -> TopicBridge:
             from claude_agent_sdk import ClaudeSDKClient
             self._client = ClaudeSDKClient(opts)
             await self._client.connect()
+            if self.entry.session_id:
+                await self._drain_resume_replay()
 
     return MasterBridge(entry, bot)
 
@@ -179,6 +181,40 @@ def _make_master_bridge(entry: registry.TopicEntry, bot: Bot) -> TopicBridge:
 # ─────────────────────────────────────────────────────────────────────────────
 # Application setup
 # ─────────────────────────────────────────────────────────────────────────────
+
+async def _startup_health_check(bot) -> None:
+    """Send a startup status report to the General (master) topic."""
+    from orchestrator.telegram_io import send as tg_send
+    import datetime
+
+    entries = registry.get_all()
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    lines = [f"🚀 *Bot 已啟動* `{now}`\n"]
+
+    for entry in entries:
+        tag = "🎛️" if entry.is_master else "📋"
+        model_short = entry.model.split("-")[-1] if entry.model else "?"
+        session_info = f"`{entry.session_id[:8]}…`" if entry.session_id else "_新 session_"
+        folder_ok = "✅" if os.path.exists(entry.folder) else "❌ 資料夾遺失"
+        lines.append(f"{tag} *{entry.name}*  `{model_short}`  {session_info}  {folder_ok}")
+
+    # Check for any obvious issues
+    issues = []
+    for entry in entries:
+        if not os.path.exists(entry.folder):
+            issues.append(f"⚠️ {entry.name} 的工作區不存在")
+
+    if issues:
+        lines.append("\n*問題：*")
+        lines.extend(issues)
+    else:
+        lines.append("\n✅ 所有 topic 狀態正常")
+
+    try:
+        await tg_send(bot, config.MASTER_TOPIC_THREAD_ID, "\n".join(lines))
+    except Exception as e:
+        log.warning("Startup health check report failed: %s", e)
+
 
 async def post_init(application: Application) -> None:
     bot = application.bot
@@ -206,6 +242,9 @@ async def post_init(application: Application) -> None:
     await setup_commands(bot)
 
     log.info("Bot initialised. Bridges: %s", list(bridges.keys()))
+
+    # Startup health check — report to General topic
+    await _startup_health_check(bot)
 
 
 def main():

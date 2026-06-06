@@ -50,12 +50,25 @@ async def safe_edit(msg: Message, text: str) -> None:
 class StreamBuffer:
     """Accumulates streaming text and throttles Telegram edits."""
 
-    def __init__(self, bot: Bot, thread_id: int | None):
+    def __init__(self, bot: Bot, thread_id: int | None, initial_msg: Optional[Message] = None):
         self.bot = bot
         self.thread_id = thread_id
         self._text = ""
-        self._msg: Optional[Message] = None
+        self._msg: Optional[Message] = initial_msg  # reuse existing status message
         self._last_edit = 0.0
+
+    async def set_status(self, status: str) -> None:
+        """Update the status line (only while no real text has arrived yet)."""
+        if self._text:
+            return  # real content already streaming, don't overwrite
+        if self._msg:
+            await safe_edit(self._msg, status)
+        else:
+            try:
+                self._msg = await send(self.bot, self.thread_id, status)
+                self._last_edit = time.monotonic()
+            except Exception as e:
+                log.warning("StreamBuffer set_status failed: %s", e)
 
     async def append(self, delta: str) -> None:
         self._text += delta

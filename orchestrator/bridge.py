@@ -9,6 +9,7 @@ from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 from claude_agent_sdk.types import (
     AssistantMessage, ResultMessage, SystemMessage, RateLimitEvent,
     PermissionResultAllow, PermissionResultDeny, ToolPermissionContext,
+    TextBlock, ToolUseBlock,
 )
 from telegram import Bot
 
@@ -32,24 +33,43 @@ class TopicBridge:
         self._client: Optional[ClaudeSDKClient] = None
         self._lock = asyncio.Lock()
         self._session_task: Optional[asyncio.Task] = None
+        self._current_buf: Optional[StreamBuffer] = None  # shared with _can_use_tool
 
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
 
-    async def run_turn(self, text: str, extra_system: str = "") -> None:
-        """Send one user turn; stream response back to the topic."""
+    async def run_turn(self, text: str, extra_system: str = "") -> str:
+        """Send one user turn; stream response back to the topic.
+        Returns the full response text so callers (e.g. send_to_topic) can
+        read what the sub-topic said and continue a dialogue.
+        """
         async with self._lock:
             await self._ensure_client()
-            buf = StreamBuffer(self.bot, self.entry.thread_id)
+            # Show immediate status so user knows something is happening
+            status_msg = None
+            try:
+                status_msg = await send(self.bot, self.entry.thread_id, "⏳ 思考中...")
+            except Exception:
+                pass
+            buf = StreamBuffer(self.bot, self.entry.thread_id, initial_msg=status_msg)
+            self._current_buf = buf
             try:
                 await self._client.query(text)
                 async for event in self._client.receive_messages():
+                    buf = self._current_buf  # may have been reset by _can_use_tool
                     if isinstance(event, AssistantMessage):
-                        delta = "".join(
-                            b.text for b in event.content if hasattr(b, "text")
+                        # Detect tool use vs text content
+                        tool_blocks = [b for b in event.content if isinstance(b, ToolUseBlock)]
+                        text_delta = "".join(
+                            b.text for b in event.content if isinstance(b, TextBlock)
                         )
-                        await buf.append(delta)
+                        if tool_blocks and not text_delta:
+                            # Pure tool use — update status indicator
+                            names = ", ".join(f"`{b.name}`" for b in tool_blocks)
+                            await buf.set_status(f"🔧 執行中：{names}")
+                        elif text_delta:
+                            await buf.append(text_delta)
                     elif isinstance(event, ResultMessage):
                         if event.session_id:
                             registry.update_session(self.entry.thread_id, event.session_id)
@@ -58,10 +78,16 @@ class TopicBridge:
                         break
                     elif isinstance(event, RateLimitEvent):
                         log.info("[%s] rate limit event, waiting…", self.entry.slug)
+                        await buf.set_status("⏳ Rate limit，稍等...")
             except Exception as e:
                 log.exception("[%s] run_turn error: %s", self.entry.slug, e)
-                await buf.finalize()
+                await self._current_buf.finalize()
                 await send(self.bot, self.entry.thread_id, f"⚠️ 錯誤: `{e}`")
+                return f"[錯誤: {e}]"
+            finally:
+                response_text = (self._current_buf.text if self._current_buf else buf.text)
+                self._current_buf = None
+            return response_text
 
     async def set_model(self, model_id: str) -> None:
         """Switch model; takes effect on next turn.
@@ -144,6 +170,31 @@ class TopicBridge:
         self._client = ClaudeSDKClient(opts)
         # connect without initial prompt (we query separately)
         await self._client.connect()
+        # Drain any messages that --resume may have replayed from the previous
+        # session (the CLI re-emits the last assistant turn on startup).
+        # We consume until the queue is empty or we see a ResultMessage.
+        if self.entry.session_id:
+            await self._drain_resume_replay()
+
+    async def _drain_resume_replay(self) -> None:
+        """Discard any messages the CLI replays on --resume startup.
+
+        When Claude Code CLI resumes a session it re-emits the last assistant
+        turn before waiting for new input.  If we don't drain those messages
+        here, they appear as the response to the *next* user message, causing
+        a consistent one-turn delay.
+        """
+        try:
+            async with asyncio.timeout(5):
+                async for event in self._client.receive_messages():
+                    log.debug("[%s] drain replay: %s", self.entry.slug, type(event).__name__)
+                    if isinstance(event, ResultMessage):
+                        break
+        except TimeoutError:
+            # No replay messages — that's fine, just continue
+            log.debug("[%s] drain replay: timeout (no replay found)", self.entry.slug)
+        except Exception as e:
+            log.debug("[%s] drain replay error: %s", self.entry.slug, e)
 
     async def _can_use_tool(
         self,
@@ -155,6 +206,12 @@ class TopicBridge:
         if tool_name in AUTO_ALLOW_TOOLS:
             log.debug("AUTO-ALLOW tool=%s", tool_name)
             return PermissionResultAllow(behavior="allow")
+
+        # Finalize current response text so auth button appears AFTER it
+        if self._current_buf:
+            await self._current_buf.finalize()
+            # Reset to a fresh buffer; post-auth reply will create a new message
+            self._current_buf = StreamBuffer(self.bot, self.entry.thread_id)
 
         # Build a readable summary of the tool call
         summary = _tool_summary(tool_name, tool_input)

@@ -73,8 +73,9 @@ async def create_topic(name: str, description: str = "", model: str = "") -> str
 @mcp.tool()
 async def send_to_topic(topic_name: str, prompt: str) -> str:
     """
-    Send a prompt to a specific dev topic's Claude and return a summary.
+    Send a prompt to a specific dev topic's Claude and return its response.
     topic_name can be the slug or display name (case-insensitive substring match).
+    The response is returned so you can read it and continue the dialogue.
     """
     entry = _find_entry(topic_name)
     if entry is None:
@@ -82,14 +83,17 @@ async def send_to_topic(topic_name: str, prompt: str) -> str:
     bridge = _bridges.get(entry.thread_id)
     if bridge is None:
         return f"ERROR: No bridge for topic '{entry.name}'"
-    await bridge.run_turn(prompt)
-    return f"✅ Sent to **{entry.name}** (thread_id={entry.thread_id})"
+    response = await bridge.run_turn(prompt)
+    return (
+        f"✅ **{entry.name}** 回應：\n\n"
+        f"{response}"
+    )
 
 
 @mcp.tool()
 async def broadcast(prompt: str) -> str:
     """
-    Send the same prompt to ALL dev topics concurrently and report results.
+    Send the same prompt to ALL dev topics concurrently and return all responses.
     """
     dev_entries = registry.get_dev_topics()
     if not dev_entries:
@@ -100,13 +104,13 @@ async def broadcast(prompt: str) -> str:
         if bridge is None:
             return f"⚠️ {e.name}: no bridge"
         try:
-            await bridge.run_turn(prompt)
-            return f"✅ {e.name}"
+            response = await bridge.run_turn(prompt)
+            return f"✅ **{e.name}**：\n{response}"
         except Exception as ex:
             return f"❌ {e.name}: {ex}"
 
     results = await asyncio.gather(*[_send_one(e) for e in dev_entries])
-    return "\n".join(results)
+    return "\n\n---\n\n".join(results)
 
 
 @mcp.tool()
