@@ -63,41 +63,38 @@ MASTER_MODEL=claude-opus-4-8
 
 執行：
 ```
-python run.py
+.venv/bin/python run.py
 ```
 
 等 bot 啟動後，請我去 Telegram 群組傳任意一則訊息。
 Bot 會自動回覆 `chat_id`（是負數，例如 -1001234567890）。
 詢問我拿到的 chat_id 是什麼，然後更新 `.env` 的 `GROUP_ID`。
+更新完後用 Ctrl+C 停止 bot。
 
 ---
 
-## Step 6 — 重啟 bot
+## Step 6 — 用 Watchdog 正式啟動
 
-停止剛才的 bot（Ctrl+C），再次啟動：
+執行以下兩行：
 ```
-python run.py
+touch /tmp/bot.restart
+nohup .venv/bin/python watchdog.py > /tmp/watchdog.log 2>&1 &
 ```
 
-確認終端機出現 `Bot initialised` 訊息。
+Watchdog 會自動啟動 bot，並在 bot 意外退出時自動重啟。
+
+等待約 10 秒後，確認 Telegram 的 General Topic 是否收到啟動狀態報告訊息。
+如果有收到，代表安裝成功。
 
 ---
 
-## Step 7 — 讓 bot 在背景持續運行
-
-執行：
-```
-nohup python run.py > bot.log 2>&1 &
-```
-
----
-
-## Step 8 — 完成！告訴我怎麼使用
+## Step 7 — 完成！告訴我怎麼使用
 
 安裝完成後，請告訴我：
 - 如何在 Telegram 與 bot 對話
-- 如何建立新的 Topic（說「幫我建立一個叫 XX 的 topic」）
+- 如何建立新的 Topic（在 General 說「幫我建立一個叫 XX 的 topic」）
 - 常用指令（/model、/reload、/list）
+- 如何重啟 bot（`touch /tmp/bot.restart`）
 
 ---
 
