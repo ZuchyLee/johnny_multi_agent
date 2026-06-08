@@ -19,6 +19,10 @@ MODELS: list[tuple[str, str]] = [
 
 MASTER_TOPIC_THREAD_ID: int = 0  # General topic thread_id
 
+# Context window usage warning threshold (0–100). A summary is sent after
+# every turn; a warning is added when usage reaches this percentage.
+CONTEXT_WARN_PCT: float = 80.0
+
 # System prompt injected into every topic bridge so Claude knows it's
 # operating inside Telegram and formats output accordingly.
 TOPIC_SYSTEM_PROMPT: str = """你正在一個 Telegram 群組的 Topic 中運作。你的回應會直接以 Telegram legacy Markdown (parse_mode="Markdown") 顯示。

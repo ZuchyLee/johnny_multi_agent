@@ -85,44 +85,56 @@ async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_reload(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Close and reconnect the Claude session for the current topic (or all topics)."""
+    """Close and reconnect the Claude session for the current topic (or all topics).
+
+    Flags:
+      --all    reload every topic
+      --fresh  also clear session_id so next connection starts a brand-new
+               session (context window reset to 0%)
+    """
     if not _is_owner(update):
         return
 
     args = ctx.args or []
     reload_all = "--all" in args
+    fresh = "--fresh" in args
+
+    async def _do_reload(tid: int) -> str:
+        bridge = bridges.get(tid)
+        entry = registry.get(tid)
+        name = entry.name if entry else f"thread={tid}"
+        if bridge is None:
+            return f"❓ {name}: 無 bridge"
+        await bridge.close()
+        if fresh and entry:
+            registry.update_session(tid, None)
+            bridge.entry.session_id = None
+        return name
 
     if reload_all:
-        # Reload every topic
-        targets = list(bridges.items())
+        targets = list(bridges.keys())
         if not targets:
             await update.message.reply_text("目前沒有任何 topic。")
             return
-        names = []
-        for tid, bridge in targets:
-            await bridge.close()
-            entry = registry.get(tid)
-            names.append(entry.name if entry else f"thread={tid}")
+        names = [await _do_reload(tid) for tid in targets]
+        tag = "（全新 session）" if fresh else ""
         await update.message.reply_text(
-            f"🔄 已重載 *{len(names)}* 個 topic：\n" +
+            f"🔄 已重載 *{len(names)}* 個 topic {tag}：\n" +
             "\n".join(f"• {n}" for n in names),
             parse_mode="Markdown",
         )
     else:
-        # Reload only current topic
         thread_id = getattr(update.message, "message_thread_id", None) or 0
-        bridge = bridges.get(thread_id)
-        if bridge is None:
+        if bridges.get(thread_id) is None:
             await update.message.reply_text(
                 f"❓ 此 topic (thread\\_id={thread_id}) 尚未註冊。",
                 parse_mode="Markdown",
             )
             return
-        entry = registry.get(thread_id)
-        name = entry.name if entry else f"thread={thread_id}"
-        await bridge.close()
+        name = await _do_reload(thread_id)
+        tag = "（全新 session，context 歸零）" if fresh else "（保留對話記憶）"
         await update.message.reply_text(
-            f"🔄 *{name}* 已重載，下一則訊息將以新設定啟動。",
+            f"🔄 *{name}* 已重載 {tag}\n下一則訊息將以新設定啟動。",
             parse_mode="Markdown",
         )
 
@@ -136,8 +148,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/list — 列出所有 topic\n"
         "/new — 如何建立新 topic\n"
         "/model — 切換當前 topic 的 LLM 模型\n"
-        "/reload — 重載當前 topic 的 Claude session\n"
-        "/reload --all — 重載所有 topic\n"
+        "/reload — 重載當前 topic（保留記憶）\n"
+        "/reload --fresh — 重載並清除 context（歸零）\n"
+        "/reload --all --fresh — 所有 topic 全部清除重啟\n"
         "/help — 顯示此說明\n\n"
         "📌 在任何 topic 直接輸入文字即可與該 topic 的 Claude 對話。\n"
         "📎 傳送檔案會自動存到該 topic 的 `inbox/` 並通知 Claude。",

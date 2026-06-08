@@ -19,6 +19,9 @@ from orchestrator.telegram_io import StreamBuffer, send, permission_keyboard, se
 
 log = logging.getLogger(__name__)
 
+# Module-level cache: thread_id → last known context usage %
+_context_cache: dict[int, float] = {}
+
 # Tools that are always auto-allowed (read-only ops)
 AUTO_ALLOW_TOOLS = {
     "Read", "Edit", "Write", "Glob", "Grep", "MultiEdit",
@@ -75,6 +78,7 @@ class TopicBridge:
                             registry.update_session(self.entry.thread_id, event.session_id)
                             self.entry.session_id = event.session_id
                         await buf.finalize()
+                        await self._check_context_usage()
                         break
                     elif isinstance(event, RateLimitEvent):
                         log.info("[%s] rate limit event, waiting…", self.entry.slug)
@@ -176,6 +180,41 @@ class TopicBridge:
         if self.entry.session_id:
             await self._drain_resume_replay()
 
+    async def _check_context_usage(self) -> None:
+        """Check context window usage, update cache, and show all-topic summary."""
+        if not self._client:
+            return
+        try:
+            usage = await self._client.get_context_usage()
+            pct = float(usage.get("percentage", 0))
+            total = usage.get("totalTokens", 0)
+            max_t = usage.get("maxTokens", 0)
+            log.info("[%s] context usage: %.1f%% (%d/%d tokens)",
+                     self.entry.slug, pct, total, max_t)
+
+            _context_cache[self.entry.thread_id] = pct
+
+            all_entries = registry.get_all()
+            parts = []
+            for e in all_entries:
+                cached = _context_cache.get(e.thread_id)
+                bar = _pct_bar(cached) if cached is not None else "—"
+                icon = "🎛️" if e.is_master else "📋"
+                parts.append(f"{icon} *{e.name}* {bar}")
+
+            msg = "📊 *Context*\n" + "\n".join(parts)
+
+            if pct >= config.CONTEXT_WARN_PCT:
+                msg += (
+                    f"\n\n⚠️ *{self.entry.name} 已達 {pct:.0f}%*"
+                    f"（{total:,} / {max_t:,} tokens）\n"
+                    f"建議執行 `/reload --fresh` 清除 context。"
+                )
+
+            await send(self.bot, self.entry.thread_id, msg)
+        except Exception as e:
+            log.warning("[%s] context usage check failed: %s", self.entry.slug, e)
+
     async def _drain_resume_replay(self) -> None:
         """Discard any messages the CLI replays on --resume startup.
 
@@ -252,6 +291,15 @@ class TopicBridge:
         if decision == "allow":
             return PermissionResultAllow(behavior="allow")
         return PermissionResultDeny(behavior="deny", message="user denied")
+
+
+def _pct_bar(pct: float) -> str:
+    """Return a compact visual indicator for context usage percentage."""
+    if pct < 50:
+        return f"🟢 `{pct:.0f}%`"
+    elif pct < 80:
+        return f"🟡 `{pct:.0f}%`"
+    return f"🔴 `{pct:.0f}%`"
 
 
 def _tool_summary(tool_name: str, tool_input: dict) -> str:
