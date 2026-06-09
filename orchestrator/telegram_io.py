@@ -30,21 +30,27 @@ async def send(bot: Bot, thread_id: int | None, text: str, **kwargs) -> Message:
     )
 
 
-async def safe_edit(msg: Message, text: str) -> None:
-    """Edit a message, swallowing 'message not modified' and handling rate limits."""
+async def safe_edit(msg: Message, text: str) -> bool:
+    """Edit a message, swallowing 'message not modified' and handling rate limits.
+    Returns True if the edit succeeded (or was a no-op), False if it failed."""
     try:
         await msg.edit_text(text[:4096], parse_mode="Markdown")
+        return True
     except BadRequest as e:
-        if "message is not modified" not in str(e).lower():
-            log.debug("edit_text BadRequest: %s", e)
+        if "message is not modified" in str(e).lower():
+            return True  # no-op, counts as success
+        log.debug("edit_text BadRequest: %s", e)
+        return False
     except RetryAfter as e:
         await asyncio.sleep(e.retry_after + 0.5)
         try:
             await msg.edit_text(text[:4096], parse_mode="Markdown")
+            return True
         except Exception:
-            pass
+            return False
     except Exception as e:
         log.debug("edit_text error: %s", e)
+        return False
 
 
 class StreamBuffer:
@@ -87,9 +93,18 @@ class StreamBuffer:
         """Flush final text; called when stream ends."""
         if final:
             self._text = final
+        if not self._text:
+            return
         if self._msg:
-            await safe_edit(self._msg, self._text)
-        elif self._text:
+            ok = await safe_edit(self._msg, self._text)
+            if not ok:
+                # Edit failed (e.g. Markdown parse error); fall back to new message
+                log.debug("finalize: safe_edit failed, falling back to sendMessage")
+                try:
+                    await send(self.bot, self.thread_id, self._text)
+                except Exception as e:
+                    log.warning("StreamBuffer finalize fallback send failed: %s", e)
+        else:
             try:
                 self._msg = await send(self.bot, self.thread_id, self._text)
             except Exception as e:
