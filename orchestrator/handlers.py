@@ -251,7 +251,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         log.info("CALLBACK  data=%r  parts=%s", data, parts)
         _, decision, rid = parts
         resolved = permissions.resolve(rid, decision)
-        status = "✅ 已允許" if decision == "allow" else "❌ 已拒絕"
+        if decision == "trust":
+            status = "🔒 已信任（本 session 內不再詢問）"
+        elif decision == "allow":
+            status = "✅ 已允許"
+        else:
+            status = "❌ 已拒絕"
         if resolved:
             # 1. 立刻移除按鈕 (無論文字更新是否成功,按鈕都消失)
             try:

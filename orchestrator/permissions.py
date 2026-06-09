@@ -20,8 +20,8 @@ def create(request_id: str | None = None) -> tuple[str, asyncio.Future]:
     return rid, fut
 
 
-def resolve(request_id: str, decision: Literal["allow", "deny"]) -> bool:
-    """Called when user presses allow/deny button. Returns True if found."""
+def resolve(request_id: str, decision: Literal["allow", "deny", "trust"]) -> bool:
+    """Called when user presses allow/trust/deny button. Returns True if found."""
     log.info("PERM RESOLVE rid=%s  decision=%s  known_rids=%s",
              request_id, decision, list(_pending.keys()))
     fut = _pending.pop(request_id, None)

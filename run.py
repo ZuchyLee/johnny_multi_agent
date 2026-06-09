@@ -167,7 +167,7 @@ def _make_master_bridge(entry: registry.TopicEntry, bot: Bot) -> TopicBridge:
                     "orchestrator": mcp_cfg,
                     "file-tools": self._make_file_mcp(),
                 },
-                system_prompt=config.TOPIC_SYSTEM_PROMPT,
+                # system_prompt 由 workspace 的 CLAUDE.md 負責，不重複注入
             )
             from claude_agent_sdk import ClaudeSDKClient
             self._client = ClaudeSDKClient(opts)

@@ -37,6 +37,7 @@ class TopicBridge:
         self._lock = asyncio.Lock()
         self._session_task: Optional[asyncio.Task] = None
         self._current_buf: Optional[StreamBuffer] = None  # shared with _can_use_tool
+        self._trusted_tools: set[str] = set()  # tools trusted for this session
 
     # -------------------------------------------------------------------------
     # Public API
@@ -83,6 +84,9 @@ class TopicBridge:
                     elif isinstance(event, RateLimitEvent):
                         log.info("[%s] rate limit event, waiting…", self.entry.slug)
                         await buf.set_status("⏳ Rate limit，稍等...")
+            except asyncio.CancelledError:
+                log.warning("[%s] run_turn was cancelled", self.entry.slug)
+                raise
             except Exception as e:
                 log.exception("[%s] run_turn error: %s", self.entry.slug, e)
                 await self._current_buf.finalize()
@@ -91,6 +95,8 @@ class TopicBridge:
             finally:
                 response_text = (self._current_buf.text if self._current_buf else buf.text)
                 self._current_buf = None
+                log.info("[%s] run_turn done, text_len=%d",
+                         self.entry.slug, len(response_text) if response_text else 0)
             return response_text
 
     async def set_model(self, model_id: str) -> None:
@@ -114,6 +120,7 @@ class TopicBridge:
 
     async def close(self) -> None:
         permissions.cancel_all_for(self.entry.slug)
+        self._trusted_tools.clear()  # reset trust on reload
         if self._client:
             try:
                 await self._client.disconnect()
@@ -169,7 +176,8 @@ class TopicBridge:
             resume=self.entry.session_id,
             can_use_tool=self._can_use_tool,
             mcp_servers={"file-tools": self._make_file_mcp()},
-            system_prompt=config.TOPIC_SYSTEM_PROMPT,
+            # system_prompt 不再透過 --system-prompt 注入，改由各 workspace 的
+            # CLAUDE.md 負責（避免兩者同時載入造成 token 重複消耗）
         )
         self._client = ClaudeSDKClient(opts)
         # connect without initial prompt (we query separately)
@@ -246,6 +254,11 @@ class TopicBridge:
             log.debug("AUTO-ALLOW tool=%s", tool_name)
             return PermissionResultAllow(behavior="allow")
 
+        # Auto-allow tools trusted this session
+        if tool_name in self._trusted_tools:
+            log.debug("TRUST-ALLOW tool=%s", tool_name)
+            return PermissionResultAllow(behavior="allow")
+
         # Finalize current response text so auth button appears AFTER it
         if self._current_buf:
             await self._current_buf.finalize()
@@ -288,7 +301,11 @@ class TopicBridge:
             log.warning("CAN_USE_TOOL  cancelled  rid=%s", rid)
             return PermissionResultDeny(behavior="deny", message="cancelled")
 
-        if decision == "allow":
+        if decision in ("allow", "trust"):
+            if decision == "trust":
+                self._trusted_tools.add(tool_name)
+                log.info("[%s] TRUST granted for tool=%s (session total: %d)",
+                         self.entry.slug, tool_name, len(self._trusted_tools))
             return PermissionResultAllow(behavior="allow")
         return PermissionResultDeny(behavior="deny", message="user denied")
 

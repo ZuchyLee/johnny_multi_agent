@@ -101,11 +101,15 @@ class StreamBuffer:
 
 
 def permission_keyboard(request_id: str, tool_name: str) -> InlineKeyboardMarkup:
-    """Two-button allow/deny keyboard for tool permission requests."""
+    """Three-button allow/trust/deny keyboard for tool permission requests."""
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(
             "✅ 允許",
             callback_data=f"perm:allow:{request_id}",
+        ),
+        InlineKeyboardButton(
+            "🔒 信任",
+            callback_data=f"perm:trust:{request_id}",
         ),
         InlineKeyboardButton(
             "❌ 拒絕",
